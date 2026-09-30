@@ -1,0 +1,11 @@
+apiVersion: v1
+appVersion: 2.15.0
+description: A Helm chart for cert-manager addon (Option B - OperatorPolicy)
+category: "Infrastructure"
+keywords:
+  - mce
+  - cert-manager
+  - operatorpolicy
+name: cert-manager-addon
+verified: "MCE"
+version: 2.15.0

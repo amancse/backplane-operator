@@ -1,0 +1,234 @@
+# ============================================================
+# OPTION B: OperatorPolicy in AddOnTemplate
+# ============================================================
+# Instead of pushing raw OLM resources (Namespace + OperatorGroup + Subscription),
+# this approach pushes an OperatorPolicy CR. The config-policy-controller on the
+# managed cluster reconciles the OperatorPolicy and creates the OLM resources.
+#
+# Benefits:
+#   - Compliance reporting (Compliant/NonCompliant status)
+#   - Native upgradeApproval handling
+#   - Single manifest instead of 3
+#
+# Requirements:
+#   - GRC/Policy framework must be enabled on managed clusters
+#   - config-policy-controller addon must be running
+#   - open-cluster-management-policies namespace must exist
+# ============================================================
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: AddOnTemplate
+metadata:
+  name: cert-manager-addon
+spec:
+  addonName: cert-manager-addon
+  agentSpec:
+    manifestConfigs:
+      # Use CreateOnly for OperatorPolicy — policy controller owns lifecycle after creation.
+      # AODC changes require re-creation or manual update; policy controller handles
+      # Subscription reconciliation including upgrade approval.
+      - resourceIdentifier:
+          group: policy.open-cluster-management.io
+          resource: operatorpolicies
+          namespace: open-cluster-management-policies
+          name: cert-manager-operator
+        updateStrategy:
+          type: ServerSideApply
+          serverSideApply:
+            force: true
+            # Ignore status fields that the policy controller manages
+            ignoreFields:
+              - condition: OnSpokePresent
+                jsonPaths:
+                  - .status
+    workload:
+      manifests:
+        # ============================================================
+        # OperatorPolicy for cert-manager Operator
+        # The config-policy-controller reconciles this and creates:
+        #   - Namespace: openshift-cert-manager-operator
+        #   - OperatorGroup: openshift-cert-manager-operator
+        #   - Subscription: openshift-cert-manager-operator
+        #
+        # AC-3 (Safe Orphan): OperatorPolicy has deletion-orphan annotation.
+        # When the addon is removed, the policy controller preserves the
+        # underlying OLM resources (operator continues running independently).
+        # ============================================================
+        - apiVersion: policy.open-cluster-management.io/v1beta1
+          kind: OperatorPolicy
+          metadata:
+            name: cert-manager-operator
+            namespace: open-cluster-management-policies
+            annotations:
+              # AC-3: Orphan on addon removal — policy controller preserves OLM resources
+              addon.open-cluster-management.io/deletion-orphan: ""
+          spec:
+            complianceType: musthave
+            remediationAction: enforce
+            severity: high
+            # OperatorGroup configuration — policy controller creates this
+            operatorGroup:
+              name: openshift-cert-manager-operator
+              namespace: openshift-cert-manager-operator
+              targetNamespaces:
+                - openshift-cert-manager-operator
+            # Subscription configuration — policy controller creates this
+            subscription:
+              channel: '{{ `{{channel}}` }}'
+              name: openshift-cert-manager-operator
+              namespace: openshift-cert-manager-operator
+              source: '{{ `{{catalogSource}}` }}'
+              sourceNamespace: '{{ `{{catalogSourceNamespace}}` }}'
+              startingCSV: '{{ `{{startingCSV}}` }}'
+            # Upgrade approval — handled natively by policy controller
+            # Automatic: InstallPlans auto-approved
+            # Manual: InstallPlans require explicit approval (policy shows NonCompliant until approved)
+            upgradeApproval: '{{ `{{upgradeApproval}}` }}'
+
+        # ============================================================
+        # RBAC for the work agent on the managed cluster.
+        # klusterlet-work-sa needs permission to create OperatorPolicy CRs
+        # in the open-cluster-management-policies namespace.
+        # ============================================================
+        - apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRole
+          metadata:
+            name: open-cluster-management:cert-manager-addon
+          rules:
+            # Permission to manage OperatorPolicy CRs
+            - apiGroups: ["policy.open-cluster-management.io"]
+              resources: ["operatorpolicies"]
+              verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+            # Permission to check policy namespace exists
+            - apiGroups: [""]
+              resources: ["namespaces"]
+              verbs: ["get", "list", "watch"]
+
+        - apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRoleBinding
+          metadata:
+            name: open-cluster-management:cert-manager-addon
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: open-cluster-management:cert-manager-addon
+          subjects:
+            - kind: ServiceAccount
+              name: klusterlet-work-sa
+              namespace: open-cluster-management-agent
+
+        # ============================================================
+        # AC-4 (Guarded Teardown): Pre-delete confirmation guard.
+        # Same pattern as Option A — requires ConfigMap confirmation before
+        # addon deletion proceeds.
+        # ============================================================
+        - apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: cert-manager-addon-predelete
+            namespace: open-cluster-management-policies
+            annotations:
+              addon.open-cluster-management.io/addon-pre-delete: ""
+
+        - apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: cert-manager-addon-predelete
+            namespace: open-cluster-management-policies
+            annotations:
+              addon.open-cluster-management.io/addon-pre-delete: ""
+          rules:
+            - apiGroups: [""]
+              resources: ["configmaps"]
+              verbs: ["get", "list"]
+            - apiGroups: ["policy.open-cluster-management.io"]
+              resources: ["operatorpolicies"]
+              verbs: ["get", "list"]
+
+        - apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: cert-manager-addon-predelete
+            namespace: open-cluster-management-policies
+            annotations:
+              addon.open-cluster-management.io/addon-pre-delete: ""
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: cert-manager-addon-predelete
+          subjects:
+            - kind: ServiceAccount
+              name: cert-manager-addon-predelete
+              namespace: open-cluster-management-policies
+
+        - apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: cert-manager-addon-predelete
+            namespace: open-cluster-management-policies
+            annotations:
+              addon.open-cluster-management.io/addon-pre-delete: ""
+          spec:
+            activeDeadlineSeconds: 300
+            backoffLimit: 0
+            ttlSecondsAfterFinished: 300
+            manualSelector: true
+            selector:
+              matchLabels:
+                job-name: cert-manager-addon-predelete
+            template:
+              metadata:
+                labels:
+                  job-name: cert-manager-addon-predelete
+              spec:
+                restartPolicy: Never
+                serviceAccountName: cert-manager-addon-predelete
+                securityContext:
+                  runAsNonRoot: true
+                  seccompProfile:
+                    type: RuntimeDefault
+                containers:
+                - name: confirm-delete
+                  image: registry.redhat.io/openshift4/ose-cli:latest
+                  command:
+                  - /bin/bash
+                  - -c
+                  - |
+                    echo "============================================================"
+                    echo "cert-manager-addon PRE-DELETE CONFIRMATION CHECK (Option B)"
+                    echo "============================================================"
+                    echo ""
+                    echo "Checking for confirmation ConfigMap..."
+                    
+                    # Check if confirmation ConfigMap exists
+                    if kubectl get configmap cert-manager-addon-confirm-delete -n open-cluster-management-policies -o jsonpath='{.data.confirm}' 2>/dev/null | grep -q "^yes$"; then
+                      echo "✓ Confirmation found. Proceeding with addon removal."
+                      echo ""
+                      echo "NOTE: Due to deletion-orphan annotation on OperatorPolicy:"
+                      echo "  - The OperatorPolicy CR will be preserved"
+                      echo "  - The underlying OLM resources (Subscription, OperatorGroup) will be preserved"
+                      echo "  - cert-manager operator continues running independently"
+                      echo "  - All Certificate CRs and issued TLS secrets are preserved"
+                      echo ""
+                      echo "The addon will be unregistered from ACM/MCE, but cert-manager"
+                      echo "continues to operate independently on this cluster."
+                      exit 0
+                    fi
+                    
+                    echo "✗ Confirmation NOT found."
+                    echo ""
+                    echo "To confirm addon removal, create the confirmation ConfigMap:"
+                    echo ""
+                    echo "  kubectl create configmap cert-manager-addon-confirm-delete \\"
+                    echo "    --from-literal=confirm=yes \\"
+                    echo "    -n open-cluster-management-policies"
+                    echo ""
+                    echo "Then retry deleting the ManagedClusterAddOn."
+                    echo ""
+                    echo "============================================================"
+                    exit 1
+                  securityContext:
+                    allowPrivilegeEscalation: false
+                    capabilities:
+                      drop: ["ALL"]
+                    readOnlyRootFilesystem: true
+                    runAsNonRoot: true

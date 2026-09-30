@@ -1,0 +1,26 @@
+# AddOnDeploymentConfig for cert-manager (Option B - OperatorPolicy)
+# These variables are substituted into the OperatorPolicy spec.
+apiVersion: addon.open-cluster-management.io/v1alpha1
+kind: AddOnDeploymentConfig
+metadata:
+  name: cert-manager-addon
+  namespace: {{ .Values.global.namespace }}
+spec:
+  # OperatorPolicy uses these customizedVariables for Subscription configuration.
+  # For disconnected/mirrored environments, edit this AddOnDeploymentConfig
+  # directly on the hub to point catalogSource at an internal CatalogSource.
+  customizedVariables:
+  - name: catalogSource
+    value: redhat-operators
+  - name: catalogSourceNamespace
+    value: openshift-marketplace
+  - name: channel
+    value: stable-v1
+  # upgradeApproval maps to OperatorPolicy.spec.upgradeApproval
+  # - Automatic: InstallPlans auto-approved by policy controller
+  # - Manual: InstallPlans require explicit approval; policy shows NonCompliant until approved
+  - name: upgradeApproval
+    value: Automatic
+  # Optional: pin to a specific CSV version (leave empty for latest in channel)
+  - name: startingCSV
+    value: ""

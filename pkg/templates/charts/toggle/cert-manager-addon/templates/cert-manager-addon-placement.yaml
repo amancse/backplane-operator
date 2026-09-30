@@ -1,0 +1,26 @@
+# Placement for cert-manager addon (Option B)
+# Selects OpenShift managed clusters that have GRC/policy framework enabled.
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: Placement
+metadata:
+  name: cert-manager-addon
+  namespace: open-cluster-management-global-set
+spec:
+  clusterSets:
+  - global
+  predicates:
+  # OLM's redhat-operators CatalogSource and the policy framework are only available
+  # on OpenShift managed clusters. Non-OpenShift clusters cannot satisfy Option B.
+  - requiredClusterSelector:
+      labelSelector:
+        matchExpressions:
+        # Must be OpenShift (OLM + redhat-operators catalog)
+        - key: vendor
+          operator: In
+          values:
+          - OpenShift
+        # Allow opt-out via label
+        - key: cert-manager-addon
+          operator: NotIn
+          values:
+          - disabled
