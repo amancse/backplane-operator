@@ -5,9 +5,7 @@ metadata:
   name: cert-manager-addon
   namespace: {{ .Values.global.namespace }}
 spec:
-  customizedVariables:
-    - name: certManagerCrdsUrl
-      value: "https://github.com/cert-manager/cert-manager/releases/download/v1.14.4/cert-manager.crds.yaml"
+  {{- if or .Values.hubconfig.tolerations .Values.hubconfig.nodeSelector }}
   nodePlacement:
     {{- with .Values.hubconfig.tolerations }}
     tolerations:
@@ -23,3 +21,6 @@ spec:
     nodeSelector:
 {{ toYaml . | indent 6 }}
     {{- end }}
+  {{- else }}
+  {}
+  {{- end }}
